@@ -1,77 +1,67 @@
 pipeline {
   agent {
     docker {
-      image 'maven:3.9.9-eclipse-temurin-17'
-      // 👇 Run as Jenkins user instead of root & mount Maven cache
-      args '--user 1000:1000 -v /var/run/docker.sock:/var/run/docker.sock -v $HOME/.m2:/root/.m2'
+      image 'abhishekf5/maven-abhishek-docker-agent:v1'
+      // Run as Jenkins user (uid=108, gid=111), mount Docker socket + Maven cache
+      args '--user 108:111 -v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/jenkins/.m2:/root/.m2'
     }
   }
-
-  options {
-    disableConcurrentBuilds()
-    skipDefaultCheckout(true)
-  }
-
   stages {
-    stage('Clean Workspace') {
-      steps {
-        cleanWs(deleteDirs: true, disableDeferredWipeout: true)
-      }
-    }
-
     stage('Checkout') {
       steps {
-        checkout([$class: 'GitSCM', branches: [[name: '*/main']],
-          userRemoteConfigs: [[url: 'https://github.com/Ravi-Pr4kash/Jenkins-Pipeline.git']]
-        ])
-        sh 'echo ✅ Code Checkout Passed'
+        sh 'echo passed'
+        //git branch: 'main', url: 'https://github.com/iam-veeramalla/Jenkins-Zero-To-Hero.git'
       }
     }
-
-    stage('Build App') {
+    stage('Build and Test') {
       steps {
-        dir('spring-boot-app') {
-          sh 'mvn -B clean package -DskipTests'
-          sh 'echo ✅ Maven Build Successful'
+        sh 'ls -ltr'
+        sh 'cd java-maven-sonar-argocd-helm-k8s/spring-boot-app && mvn clean package'
+      }
+    }
+    stage('Static Code Analysis') {
+      environment {
+        SONAR_URL = "http://34.201.116.83:9000"
+      }
+      steps {
+        withCredentials([string(credentialsId: 'sonarqube', variable: 'SONAR_AUTH_TOKEN')]) {
+          sh 'cd java-maven-sonar-argocd-helm-k8s/spring-boot-app && mvn sonar:sonar -Dsonar.login=$SONAR_AUTH_TOKEN -Dsonar.host.url=${SONAR_URL}'
         }
       }
     }
-
-    stage('Build Docker Image') {
+    stage('Build and Push Docker Image') {
+      environment {
+        DOCKER_IMAGE = "abhishekf5/ultimate-cicd:${BUILD_NUMBER}"
+        REGISTRY_CREDENTIALS = credentials('docker-cred')
+      }
       steps {
-        dir('spring-boot-app') {
-          script {
-            sh 'docker build -t spring-boot-app:latest .'
+        script {
+          sh 'cd java-maven-sonar-argocd-helm-k8s/spring-boot-app && docker build -t ${DOCKER_IMAGE} .'
+          def dockerImage = docker.image("${DOCKER_IMAGE}")
+          docker.withRegistry('https://index.docker.io/v1/', "docker-cred") {
+            dockerImage.push()
           }
         }
       }
     }
-
-    stage('Push to DockerHub') {
+    stage('Update Deployment File') {
+      environment {
+        GIT_REPO_NAME = "Jenkins-Zero-To-Hero"
+        GIT_USER_NAME = "iam-veeramalla"
+      }
       steps {
-        withCredentials([usernamePassword(credentialsId: 'dockerhub-creds',
-          usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-          script {
-            sh '''
-              echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
-              docker tag spring-boot-app:latest $DOCKER_USER/spring-boot-app:latest
-              docker push $DOCKER_USER/spring-boot-app:latest
-            '''
-          }
+        withCredentials([string(credentialsId: 'github', variable: 'GITHUB_TOKEN')]) {
+          sh '''
+            git config user.email "abhishek.xyz@gmail.com"
+            git config user.name "Abhishek Veeramalla"
+            BUILD_NUMBER=${BUILD_NUMBER}
+            sed -i "s/replaceImageTag/${BUILD_NUMBER}/g" java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml
+            git add java-maven-sonar-argocd-helm-k8s/spring-boot-app-manifests/deployment.yml
+            git commit -m "Update deployment image to version ${BUILD_NUMBER}"
+            git push https://${GITHUB_TOKEN}@github.com/${GIT_USER_NAME}/${GIT_REPO_NAME} HEAD:main
+          '''
         }
       }
-    }
-
-    stage('Deploy with ArgoCD') {
-      steps {
-        sh 'echo 🚀 Trigger ArgoCD sync here (argocd app sync spring-boot-app)'
-      }
-    }
-  }
-
-  post {
-    always {
-      cleanWs(deleteDirs: true, disableDeferredWipeout: true) // 👈 ensures cleanup
     }
   }
 }
