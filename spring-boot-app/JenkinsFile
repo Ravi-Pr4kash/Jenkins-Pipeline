@@ -6,6 +6,24 @@ pipeline {
     }
   }
 
+  options {
+    disableConcurrentBuilds() // avoid multiple builds fighting for workspace
+    skipDefaultCheckout(true) // we will do checkout manually
+  }
+  stages {
+    stage('Clean Workspace') {
+      steps {
+        deleteDir() // removes everything in workspace
+      }
+    }
+    stage('Checkout') {
+      steps {
+        checkout([$class: 'GitSCM', branches: [[name: '*/main']], 
+          userRemoteConfigs: [[url: 'https://github.com/Ravi-Pr4kash/Jenkins-Pipeline.git']]
+        ])
+      }
+    }
+
   stages {
     stage('Checkout') {
       steps {
